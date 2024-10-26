@@ -338,15 +338,23 @@ def ask(ai_tools: AITools, service: Optional[str], model: Optional[str],
     file_contents = []
     if file:
         for f in file:
-            with open(f, 'r') as file_input:
-                file_contents.append(f"File: {f}\n\n{file_input.read()}\n\n")
+            file_extension = os.path.splitext(f)[1].lower()
+            if file_extension in ['.png', '.jpg', '.jpeg', '.gif']:
+                file_contents.append(f"Image File: {f}\n\n")
+            else:
+                with open(f, 'r') as file_input:
+                    file_contents.append(f"File: {f}\n\n{file_input.read()}\n\n")
     
     if folder:
         for root, _, files in os.walk(folder):
             for f in files:
                 file_path = os.path.join(root, f)
-                with open(file_path, 'r') as file_input:
-                    file_contents.append(f"File: {file_path}\n\n{file_input.read()}\n\n")
+                file_extension = os.path.splitext(f)[1].lower()
+                if file_extension in ['.png', '.jpg', '.jpeg', '.gif']:
+                    file_contents.append(f"Image File: {file_path}\n\n")
+                else:
+                    with open(file_path, 'r') as file_input:
+                        file_contents.append(f"File: {file_path}\n\n{file_input.read()}\n\n")
     
     # Combine file contents with the prompt
     if file_contents:
