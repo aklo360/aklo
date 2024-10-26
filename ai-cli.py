@@ -230,7 +230,10 @@ class AITools:
         
         # Add model information to the response
         if not response_text.endswith(f"Response by {model}"):
-            response_text += f"\n\nResponse by {model}"
+            est = pytz.timezone('US/Eastern')
+            current_time = datetime.now(est)
+            timestamp = current_time.strftime('%Y-%m-%d %H:%M:%S EST')
+            response_text += f"\n\nResponse by {model}\n{timestamp}"
         
         self.save_to_history(prompt, response_text, service, model)
         
@@ -655,3 +658,4 @@ def search(ai_tools: AITools, query: str):
 
 if __name__ == '__main__':
     cli()
+
