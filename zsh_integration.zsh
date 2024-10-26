@@ -42,36 +42,47 @@ function haiku() {
     python3 "${AI_TOOLS_PATH}/bin/ai-cli.py" ask --service anthropic --model claude-3-haiku-20240307 "$@"
 }
 
-function claude2() {
-    python3 "${AI_TOOLS_PATH}/bin/ai-cli.py" ask --service anthropic --model claude-2.1 "$@"
-}
-
-# Smart and Complex AI shortcuts
-function smart() {
-    python3 "${AI_TOOLS_PATH}/bin/ai-cli.py" ask --smart "$@"
-}
-
-function complex() {
-    python3 "${AI_TOOLS_PATH}/bin/ai-cli.py" ask --complex "$@"
-}
-
 # Claude Computer Control shortcuts
 function claudec() {
     python3 "${AI_TOOLS_PATH}/bin/ai-cli.py" ask --service anthropic --computer-control --model claude-3-opus-20240229 "$@"
 }
 
-# New memory-related functions
+# Key bindings for AI tools
+bindkey '^X^A' _ai_widget
+
+# AI history functions
 function ai_history() {
-    python3 "${AI_TOOLS_PATH}/bin/ai-cli.py" show-history "$@"
+    python3 "${AI_TOOLS_PATH}/bin/ai-cli.py" show_history "$@"
 }
 
 function ai_search() {
     python3 "${AI_TOOLS_PATH}/bin/ai-cli.py" search "$@"
 }
 
-# Shorthand for common memory operations
-alias aih='ai_history'
-alias ais='ai_search'
+# Image generation shortcut
+function ai_image() {
+    python3 "${AI_TOOLS_PATH}/bin/ai-cli.py" image-gen "$@"
+}
+
+# Text-to-speech shortcut
+function ai_speech() {
+    python3 "${AI_TOOLS_PATH}/bin/ai-cli.py" speech "$@"
+}
+
+# Audio transcription shortcut
+function ai_transcribe() {
+    python3 "${AI_TOOLS_PATH}/bin/ai-cli.py" transcribe "$@"
+}
+
+# Text embedding shortcut
+function ai_embed() {
+    python3 "${AI_TOOLS_PATH}/bin/ai-cli.py" embed "$@"
+}
+
+# Content moderation shortcut
+function ai_moderate() {
+    python3 "${AI_TOOLS_PATH}/bin/ai-cli.py" moderate "$@"
+}
 
 # Advanced history search with fzf
 function ai_search_fzf() {
@@ -88,18 +99,6 @@ bindkey '^X^F' ai_search_fzf
 
 # Key bindings for AI tools
 bindkey '^X^A' _ai_widget
-
-# Custom widget for AI prompt
-function _ai_widget() {
-    local cmd="ai"
-    BUFFER="${BUFFER:0:$CURSOR}$cmd ${BUFFER:$CURSOR}"
-    CURSOR=$(( CURSOR + ${#cmd} + 1 ))
-    zle redisplay
-}
-zle -N _ai_widget
-
-# Completions
-fpath=("${AI_TOOLS_PATH}/completions" $fpath)
 
 # Model information function
 function ai_models() {
@@ -131,6 +130,9 @@ function ai_models() {
     echo "haiku      : Claude 3 Haiku (Fastest)"
     echo "claude2    : Claude 2.1 (Legacy)"
     
+    echo "\n[Computer Control Models]"
+    echo "claudec    : Claude with computer control (Beta)"
+    
     echo "\n[Memory Commands]"
     echo "ai history : Show recent conversation history"
     echo "ai search  : Search through past conversations"
@@ -142,6 +144,7 @@ function ai_models() {
     echo "opus \"Tell me about quantum physics\"    # Use Claude 3 Opus"
     echo "aih --limit 5                           # Show last 5 interactions"
     echo "ais \"python\"                           # Search for mentions of python"
+    echo "claudec \"Open Chrome\"                   # Use Claude with computer control"
 
     echo "\n[Shortcut Commands]"
     echo "smart      : Use GPT-4o model (--smart flag)"
