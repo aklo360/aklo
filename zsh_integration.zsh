@@ -52,12 +52,16 @@ bindkey '^X^A' _ai_widget
 
 # AI history functions
 function ai_history() {
-    python3 "${AI_TOOLS_PATH}/bin/ai-cli.py" show_history "$@"
+    python3 "${AI_TOOLS_PATH}/bin/ai-cli.py" history "$@"
 }
 
 function ai_search() {
     python3 "${AI_TOOLS_PATH}/bin/ai-cli.py" search "$@"
 }
+
+# Shorthand for common memory operations
+alias aih='ai_history'
+alias ais='ai_search'
 
 # Image generation shortcut
 function ai_image() {
@@ -130,9 +134,6 @@ function ai_models() {
     echo "haiku      : Claude 3 Haiku (Fastest)"
     echo "claude2    : Claude 2.1 (Legacy)"
     
-    echo "\n[Computer Control Models]"
-    echo "claudec    : Claude with computer control (Beta)"
-    
     echo "\n[Memory Commands]"
     echo "ai history : Show recent conversation history"
     echo "ai search  : Search through past conversations"
@@ -144,9 +145,4 @@ function ai_models() {
     echo "opus \"Tell me about quantum physics\"    # Use Claude 3 Opus"
     echo "aih --limit 5                           # Show last 5 interactions"
     echo "ais \"python\"                           # Search for mentions of python"
-    echo "claudec \"Open Chrome\"                   # Use Claude with computer control"
-
-    echo "\n[Shortcut Commands]"
-    echo "smart      : Use GPT-4o model (--smart flag)"
-    echo "complex    : Use Claude-3-Opus model (--complex flag)"
 }

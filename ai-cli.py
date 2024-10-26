@@ -31,42 +31,53 @@ urllib3.disable_warnings()
 console = Console()
 
 class MemoryManager:
-    def __init__(self, db_path: str, context_window: int = 20):
+    def __init__(self, db_path: str, context_window: int):
         self.db_path = db_path
         self.context_window = context_window
-        self.setup_database()
-    
-    def setup_database(self):
+        
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS memory (
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp REAL,
                     role TEXT,
-                    content TEXT,
-                    model TEXT,
-                    service TEXT
+                    content TEXT
                 )
-            """)
-            
-            # Create index for faster retrieval
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON memory(timestamp)")
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_info (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+                """
+            )
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp)")
     
-    def add_interaction(self, role: str, content: str, model: str, service: str):
+    def add_message(self, role: str, content: str):
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                "INSERT INTO memory (timestamp, role, content, model, service) VALUES (?, ?, ?, ?, ?)",
-                (time.time(), role, content, model, service)
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO messages (timestamp, role, content) VALUES (?, ?, ?)",
+                (time.time(), role, content)
             )
     
-    def get_recent_context(self, max_chars: int = 12000) -> List[Dict[str, str]]:
+    def get_recent_context(self, max_chars: int = 4096) -> List[Dict]:
         messages = []
         total_chars = 0
         
         with sqlite3.connect(self.db_path) as conn:
-            for row in conn.execute(
-                "SELECT role, content FROM memory ORDER BY timestamp DESC LIMIT ?",
-                (self.context_window,)
+            cursor = conn.cursor()
+            
+            for row in cursor.execute(
+                """
+                SELECT role, content 
+                FROM messages
+                ORDER BY timestamp DESC
+                """
             ):
                 message = {"role": row[0], "content": row[1]}
                 message_chars = len(row[1])
@@ -78,28 +89,59 @@ class MemoryManager:
                 total_chars += message_chars
         
         return messages
-
-    def search_memory(self, query: str) -> List[Dict]:
+    
+    def store_user_info(self, key: str, value: str):
         with sqlite3.connect(self.db_path) as conn:
-            results = []
-            for row in conn.execute(
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT OR REPLACE INTO user_info (key, value) VALUES (?, ?)",
+                (key, value)
+            )
+    
+    def get_user_info(self, key: str) -> Optional[str]:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT value FROM user_info WHERE key = ?",
+                (key,)
+            )
+            result = cursor.fetchone()
+            
+            if result:
+                return result[0]
+            else:
+                return None
+    
+    def get_conversation_history(self, limit: int = 10) -> List[Dict]:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
                 """
-                SELECT timestamp, role, content, model, service 
-                FROM memory 
-                WHERE content LIKE ? 
+                SELECT role, content 
+                FROM messages
+                ORDER BY timestamp DESC
+                LIMIT ?
+                """,
+                (limit,)
+            )
+            rows = cursor.fetchall()
+            return [{"role": row[0], "content": row[1]} for row in rows]
+    
+    def search_conversation_history(self, query: str) -> List[Dict]:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT role, content
+                FROM messages
+                WHERE content LIKE ?
                 ORDER BY timestamp DESC
                 """,
                 (f"%{query}%",)
-            ):
-                results.append({
-                    'timestamp': datetime.fromtimestamp(row[0]).strftime('%Y-%m-%d %H:%M:%S'),
-                    'role': row[1],
-                    'content': row[2],
-                    'model': row[3],
-                    'service': row[4]
-                })
-            return results
-        
+            )
+            rows = cursor.fetchall()
+            return [{"role": row[0], "content": row[1]} for row in rows]
+
 class AITools:
     def __init__(self):
         self.config = {
@@ -122,12 +164,17 @@ class AITools:
         
         self.memory = MemoryManager(self.config['db_path'], self.config['context_window'])
         self.client = openai.OpenAI()
-
-    def save_to_history(self, prompt: str, response: str, service: str, model: str, type: str = "chat"):
-        # Save to memory database
-        self.memory.add_interaction("user", prompt[:1000], model, service)
-        self.memory.add_interaction("assistant", response[:1000], model, service)
-
+    
+    def save_to_history(self, prompt: str, response: str, service: str, model: str):
+        self.memory.add_message("user", prompt)
+        self.memory.add_message("assistant", response)
+    
+    def store_user_info(self, key: str, value: str):
+        self.memory.store_user_info(key, value)
+    
+    def get_user_info(self, key: str) -> Optional[str]:
+        return self.memory.get_user_info(key)
+    
     def get_chat_response(self, prompt: str, service: str, model: Optional[str] = None, 
                          temperature: Optional[float] = None, computer_control: bool = False) -> str:
         model = model or self.config[service]['default_model']
@@ -185,6 +232,8 @@ class AITools:
         if not response_text.endswith(f"Response by {model}"):
             response_text += f"\n\nResponse by {model}"
         
+        self.save_to_history(prompt, response_text, service, model)
+        
         return response_text
 
     def generate_image(self, prompt: str, model: str = "dall-e-3", size: str = "1024x1024", 
@@ -201,6 +250,8 @@ class AITools:
             image_url = response.data[0].url
             self.save_to_history(prompt, image_url, "openai", model, "image")
             return image_url
+        except requests.exceptions.RequestException as e:
+            console.print(f"[red]Connection error:[/red] {str(e)}")
         except Exception as e:
             console.print(f"[red]Error generating image:[/red] {str(e)}")
             console.print("\n[yellow]Debug information:[/yellow]")
@@ -210,7 +261,7 @@ class AITools:
             console.print(f"Quality: {quality}")
             if "--debug" in os.getenv('AI_TOOLS_OPTIONS', ''):
                 raise
-            return None
+        return None
 
     def text_to_speech(self, text: str, model: str = "tts-1", voice: str = "alloy", 
                       output_file: str = "output.mp3"):
@@ -338,23 +389,15 @@ def ask(ai_tools: AITools, service: Optional[str], model: Optional[str],
     file_contents = []
     if file:
         for f in file:
-            file_extension = os.path.splitext(f)[1].lower()
-            if file_extension in ['.png', '.jpg', '.jpeg', '.gif']:
-                file_contents.append(f"Image File: {f}\n\n")
-            else:
-                with open(f, 'r') as file_input:
-                    file_contents.append(f"File: {f}\n\n{file_input.read()}\n\n")
+            with open(f, 'r') as file_input:
+                file_contents.append(f"File: {f}\n\n{file_input.read()}\n\n")
     
     if folder:
         for root, _, files in os.walk(folder):
             for f in files:
                 file_path = os.path.join(root, f)
-                file_extension = os.path.splitext(f)[1].lower()
-                if file_extension in ['.png', '.jpg', '.jpeg', '.gif']:
-                    file_contents.append(f"Image File: {file_path}\n\n")
-                else:
-                    with open(file_path, 'r') as file_input:
-                        file_contents.append(f"File: {file_path}\n\n{file_input.read()}\n\n")
+                with open(file_path, 'r') as file_input:
+                    file_contents.append(f"File: {file_path}\n\n{file_input.read()}\n\n")
     
     # Combine file contents with the prompt
     if file_contents:
@@ -365,6 +408,16 @@ def ask(ai_tools: AITools, service: Optional[str], model: Optional[str],
         prompt = click.edit(text="Enter your prompt here:\n")
         if prompt is None:
             return
+    
+    # Check if the user provided their name
+    if "my name is" in prompt.lower():
+        name = prompt.lower().split("my name is")[1].split()[0]
+        ai_tools.store_user_info("name", name)
+    
+    # Retrieve user-specific context
+    user_name = ai_tools.get_user_info("name")
+    if user_name:
+        prompt = f"User Name: {user_name}\n\n{prompt}"
     
     try:
         response = ai_tools.get_chat_response(
@@ -508,27 +561,42 @@ def list_models(ai_tools: AITools, service: Optional[str]):
 @click.pass_obj
 def search(ai_tools: AITools, query: str):
     """Search through memory"""
-    results = ai_tools.memory.search_memory(query)
-    
-    if not results:
-        console.print("[yellow]No matching memories found[/yellow]")
-        return
-    
-    table = Table(show_header=True)
-    table.add_column("Timestamp")
-    table.add_column("Role")
-    table.add_column("Content")
-    table.add_column("Model")
-    
-    for result in results:
-        table.add_row(
-            result['timestamp'],
-            result['role'],
-            result['content'][:100] + "..." if len(result['content']) > 100 else result['content'],
-            result['model']
-        )
-    
-    console.print(table)
+    with sqlite3.connect(ai_tools.config['db_path']) as conn:
+        cursor = conn.cursor()
+        results = []
+        
+        for row in cursor.execute(
+            """
+            SELECT timestamp, role, content
+            FROM messages
+            WHERE content LIKE ?
+            ORDER BY timestamp DESC
+            """,
+            (f"%{query}%",)
+        ):
+            results.append({
+                'timestamp': datetime.fromtimestamp(row[0]).strftime('%Y-%m-%d %H:%M:%S'),
+                'role': row[1],
+                'content': row[2]
+            })
+        
+        if not results:
+            console.print("[yellow]No matching memories found[/yellow]")
+            return
+        
+        table = Table(show_header=True)
+        table.add_column("Timestamp")
+        table.add_column("Role")
+        table.add_column("Content")
+        
+        for result in results:
+            table.add_row(
+                result['timestamp'],
+                result['role'],
+                result['content'][:100] + "..." if len(result['content']) > 100 else result['content']
+            )
+        
+        console.print(table)
 
 @cli.command()
 @click.option('--limit', default=10, help='Number of recent interactions to show')
@@ -538,9 +606,9 @@ def show_history(ai_tools: AITools, limit: int):
     with sqlite3.connect(ai_tools.config['db_path']) as conn:
         results = conn.execute(
             """
-            SELECT timestamp, role, content, model, service 
-            FROM memory 
-            ORDER BY timestamp DESC 
+            SELECT timestamp, role, content
+            FROM messages
+            ORDER BY timestamp DESC
             LIMIT ?
             """,
             (limit,)
@@ -550,18 +618,40 @@ def show_history(ai_tools: AITools, limit: int):
     table.add_column("Timestamp")
     table.add_column("Role")
     table.add_column("Content")
-    table.add_column("Model")
     
     for row in reversed(results):  # Show in chronological order
         table.add_row(
             datetime.fromtimestamp(row[0]).strftime('%Y-%m-%d %H:%M:%S'),
             row[1],
-            row[2][:100] + "..." if len(row[2]) > 100 else row[2],
-            row[3]
+            row[2][:100] + "..." if len(row[2]) > 100 else row[2]
         )
     
     console.print(table)
 
+@cli.command()
+@click.option('--limit', default=10, help='Number of messages to show')
+@click.pass_obj
+def history(ai_tools: AITools, limit: int):
+    """Show recent conversation history"""
+    history = ai_tools.memory.get_conversation_history(limit)
+    for message in history:
+        role = message["role"]
+        content = message["content"]
+        console.print(f"[bold]{role.capitalize()}:[/bold] {content}\n")
+
+@cli.command()
+@click.argument('query')
+@click.pass_obj
+def search(ai_tools: AITools, query: str):
+    """Search through past conversations"""
+    results = ai_tools.memory.search_conversation_history(query)
+    if results:
+        for message in results:
+            role = message["role"]
+            content = message["content"]
+            console.print(f"[bold]{role.capitalize()}:[/bold] {content}\n")
+    else:
+        console.print(f"[yellow]No results found for query: {query}[/yellow]")
+
 if __name__ == '__main__':
     cli()
-
