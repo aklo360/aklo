@@ -46,6 +46,15 @@ function claude2() {
     python3 "${AI_TOOLS_PATH}/bin/ai-cli.py" ask --service anthropic --model claude-2.1 "$@"
 }
 
+# Smart and Complex AI shortcuts
+function smart() {
+    python3 "${AI_TOOLS_PATH}/bin/ai-cli.py" ask --smart "$@"
+}
+
+function complex() {
+    python3 "${AI_TOOLS_PATH}/bin/ai-cli.py" ask --complex "$@"
+}
+
 # Claude Computer Control shortcuts
 function claudec() {
     python3 "${AI_TOOLS_PATH}/bin/ai-cli.py" ask --service anthropic --computer-control --model claude-3-opus-20240229 "$@"
@@ -133,4 +142,8 @@ function ai_models() {
     echo "opus \"Tell me about quantum physics\"    # Use Claude 3 Opus"
     echo "aih --limit 5                           # Show last 5 interactions"
     echo "ais \"python\"                           # Search for mentions of python"
+
+    echo "\n[Shortcut Commands]"
+    echo "smart      : Use GPT-4o model (--smart flag)"
+    echo "complex    : Use Claude-3-Opus model (--complex flag)"
 }

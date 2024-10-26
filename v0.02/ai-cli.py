@@ -9,7 +9,8 @@ warnings.filterwarnings('ignore', message='.*OpenSSL.*')
 import click
 import yaml
 import json
-from datetime import datetime
+from datetime import datetime, timezone
+import pytz
 from pathlib import Path
 from rich.console import Console
 from rich.markdown import Markdown
@@ -20,6 +21,7 @@ import openai
 from typing import Optional, Dict, Any, List, Tuple
 import sqlite3
 import time
+from rich.progress import Progress, SpinnerColumn, TextColumn
 
 console = Console()
 
@@ -102,11 +104,11 @@ class AITools:
     def __init__(self):
         self.config = {
             'openai': {
-                'default_model': os.getenv('AI_OPENAI_DEFAULT_MODEL', 'gpt-4'),
+                'default_model': os.getenv('AI_OPENAI_DEFAULT_MODEL', 'gpt-3.5-turbo'),
                 'max_tokens': int(os.getenv('AI_MAX_TOKENS', '4096'))
             },
             'anthropic': {
-                'default_model': os.getenv('AI_ANTHROPIC_DEFAULT_MODEL', 'claude-3-opus-20240229'),
+                'default_model': os.getenv('AI_ANTHROPIC_DEFAULT_MODEL', 'claude-3-haiku-20240307'),
                 'max_tokens': int(os.getenv('AI_MAX_TOKENS', '4096'))
             },
             'default_service': os.getenv('AI_DEFAULT_SERVICE', 'anthropic'),
@@ -130,33 +132,57 @@ class AITools:
         # Get recent context
         context = self.memory.get_recent_context()
         
+        # Add current time information
+        est = pytz.timezone('US/Eastern')
+        current_time = datetime.now(est)
+        time_info = f"Current date and time: {current_time.strftime('%Y-%m-%d %H:%M:%S')} EST"
+        
+        # Prepare system message
+        system_message = "You are an AI assistant with access to the current time and potentially reference files. Use this information when answering questions.\n\n" + time_info
+        
         # Add current prompt to context
         context.append({"role": "user", "content": prompt})
         
         # Store user message in memory
-        self.memory.add_interaction("user", prompt, model, service)
+        self.memory.add_interaction("user", prompt[:1000], model, service)  # Store only first 1000 chars to save space
         
-        if service == 'anthropic':
-            client = Anthropic()
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            transient=True
+        ) as progress:
+            task = progress.add_task(description="Thinking...", total=None)
             
-            if computer_control:
-                response_text = "Computer Control API is not yet available."
-            else:
-                response = client.messages.create(
+            if service == 'anthropic':
+                client = Anthropic()
+                
+                if computer_control:
+                    progress.update(task, description="Preparing computer control...")
+                    response_text = "Computer Control API is not yet available."
+                else:
+                    progress.update(task, description="Generating response...")
+                    response = client.messages.create(
+                        model=model,
+                        max_tokens=self.config['anthropic']['max_tokens'],
+                        temperature=temp,
+                        system=system_message,
+                        messages=[{"role": "user", "content": time_info + "\n\n" + prompt}]
+                    )
+                    response_text = str(response.content[0].text) if hasattr(response.content, '__getitem__') else str(response.content)
+            
+            elif service == 'openai':
+                progress.update(task, description="Generating response...")
+                openai_context = [{"role": "system", "content": system_message}] + context
+                response = self.client.chat.completions.create(
                     model=model,
-                    max_tokens=self.config['anthropic']['max_tokens'],
-                    temperature=temp,
-                    messages=context
+                    messages=openai_context,
+                    temperature=temp
                 )
-                response_text = str(response.content[0].text) if hasattr(response.content, '__getitem__') else str(response.content)
+                response_text = response.choices[0].message.content
         
-        elif service == 'openai':
-            response = self.client.chat.completions.create(
-                model=model,
-                messages=context,
-                temperature=temp
-            )
-            response_text = response.choices[0].message.content
+        # Add model information to the response
+        if not response_text.endswith(f"Response by {model}"):
+            response_text += f"\n\nResponse by {model}"
         
         # Store assistant's response in memory
         self.memory.add_interaction("assistant", response_text, model, service)
@@ -177,14 +203,43 @@ def cli(ctx):
 @click.option('--temperature', type=float, help='Override default temperature')
 @click.option('--raw', is_flag=True, help='Output raw text without markdown rendering')
 @click.option('--computer-control', is_flag=True, help='Use computer control capabilities (Anthropic beta)')
+@click.option('--smart', is_flag=True, help='Use GPT-4o model')
+@click.option('--complex', is_flag=True, help='Use Claude-3-Opus model')
+@click.option('--file', '-f', multiple=True, type=click.Path(exists=True), help='File(s) to use as reference')
+@click.option('--folder', '-d', type=click.Path(exists=True, file_okay=False, dir_okay=True), help='Folder containing reference files')
 @click.argument('prompt', required=False)
 @click.pass_obj
-def ask(ai_tools: AITools, service: Optional[str], model: Optional[str],
-        temperature: Optional[float], raw: bool, computer_control: bool,
-        prompt: Optional[str]):
-    """Send a prompt to a chat model with persistent memory"""
+def ask(ai_tools, service, model, temperature, raw, computer_control, smart, complex, file, folder, prompt):
+    """Send a prompt to a chat model with persistent memory and file references"""
     service = service or ai_tools.config['default_service']
-    used_model = model or ai_tools.config[service]['default_model']
+    
+    if smart:
+        service = 'openai'
+        model = 'gpt-4o'
+    elif complex:
+        service = 'anthropic'
+        model = 'claude-3-opus-20240229'
+    else:
+        model = model or ai_tools.config[service]['default_model']
+    
+    # Process file inputs
+    file_contents = []
+    if file:
+        for f in file:
+            with open(f, 'r') as file_input:
+                file_contents.append(f"File: {f}\n\n{file_input.read()}\n\n")
+    
+    if folder:
+        for root, _, files in os.walk(folder):
+            for f in files:
+                file_path = os.path.join(root, f)
+                with open(file_path, 'r') as file_input:
+                    file_contents.append(f"File: {file_path}\n\n{file_input.read()}\n\n")
+    
+    # Combine file contents with the prompt
+    if file_contents:
+        file_content_str = "\n".join(file_contents)
+        prompt = f"Reference Files:\n\n{file_content_str}\n\nUser Query: {prompt}"
     
     if not prompt:
         prompt = click.edit(text="Enter your prompt here:\n")
@@ -210,7 +265,7 @@ def ask(ai_tools: AITools, service: Optional[str], model: Optional[str],
 @cli.command()
 @click.argument('query')
 @click.pass_obj
-def search(ai_tools: AITools, query: str):
+def search(ai_tools, query):
     """Search through memory"""
     results = ai_tools.memory.search_memory(query)
     
@@ -237,7 +292,7 @@ def search(ai_tools: AITools, query: str):
 @cli.command()
 @click.option('--limit', default=10, help='Number of recent interactions to show')
 @click.pass_obj
-def show_history(ai_tools: AITools, limit: int):
+def show_history(ai_tools, limit):
     """Show recent interaction history"""
     with sqlite3.connect(ai_tools.config['db_path']) as conn:
         results = conn.execute(
@@ -265,6 +320,24 @@ def show_history(ai_tools: AITools, limit: int):
         )
     
     console.print(table)
+
+# If image-generate is implemented, add it here
+@cli.command()
+@click.option('--model', default='dall-e-3', help='Image generation model to use')
+@click.option('--size', default='1024x1024', help='Size of the generated image')
+@click.argument('prompt')
+def image_generate(model, size, prompt):
+    """Generate images using AI models
+
+    \b
+    Usage:
+      ai image-generate [OPTIONS] PROMPT
+
+    Options:
+      --model TEXT  Image generation model to use (default: dall-e-3)
+      --size TEXT   Size of the generated image (default: 1024x1024)
+    """
+    click.echo("Image generation not yet implemented.")
 
 if __name__ == '__main__':
     cli()
